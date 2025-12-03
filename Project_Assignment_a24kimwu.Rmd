@@ -1,0 +1,597 @@
+---
+title: "Project_Assignment_a24kimwu"
+output: pdf_document
+date: "2025-10-04"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Instructions
+
+Your objective is to build forecasts for the year 2019 (all four
+quarters). Any data before 2019 can be used as needed by the modeler.
+Provided data for 2020, when they are available, should be ignored.
+
+-   **dataTour.Rdata:** this contains recorded tourism flows between
+    countries, recorded in quarterly buckets. The dataset contains a
+    list of 20 destination countries. For each country there are 5
+    origin countries (organised in columns), a column containing the
+    Total, and a column that is the difference between Total and the sum
+    of the 5 provided origin countries.
+
+-   **IMFdata.Rdata:** this contains a list of 46 countries. For each
+    country there are various macroeconomic indicators that may be
+    helpful in modelling tourism flows for each country.
+
+**Mexico - Colombia**
+
+Each of you has one time series to work with. First part is the
+destination country, second part is the origin country. The dataset is
+organized in 20 destination countries as a list. Within each country you
+will find the time series for the origin countries. Any NA values are
+missing data. Do as you want with them, but justify your choice.
+
+Tips:
+
+-   Devise an evaluation scheme for your forecasts. Choose appropriate
+    error metrics. Do not select error measures arbitrarily but justify
+    your choice (and comment on results by each error measure). Split
+    your data in training, validation, and test sets, as you see
+    appropriate.
+
+-   Analyse and describe the time series. Provide visual evidence to
+    back up your claims when needed.
+
+-   Consider various modelling approaches to tackle your task. Remember
+    to include simple benchmarks (at minimum use the Naïve method as a
+    benchmark).
+
+-   Be clear about the limitations of your analysis.
+
+```{r}
+library(forecast)
+library(tsutils)
+if(!require("glmnet")){install.packages("glmnet")}; library(glmnet)
+```
+
+```{r}
+ pckg <- c("thief","MAPA","tsutils","abind")
+ for (i in 1:length(pckg)){
+ if(!(pckg[i] %in% rownames(installed.packages()))){
+ install.packages(pckg[i])
+ }
+ library(pckg[i],character.only = TRUE)
+ }
+```
+
+# Load Dataset & Look at Data
+
+```{r}
+load("./dataTour.Rdata")
+load("./IMFdata.Rdata")
+```
+
+## Take a closer look at the data
+
+```{r}
+print(ls())
+```
+
+We are fist checking the entries for the destination Mexico.
+
+```{r}
+print(dataTour["Mexico"])
+```
+
+We are just interested in the column Colombia so we will extract just
+this column for the data frame we are going to use. We have information
+from 2005 until 2019.
+
+Next we are taking a look at the IMF data for Mexico and Colombia.
+
+```{r}
+print(X["Mexico"])
+print(X["Colombia"])
+```
+
+For the data frame we are going to look at the following columns.
+
+-   GDP (dollars) - column 3
+
+-   Inflation average consumer prices (Index) - column 5
+
+We have information from 1980 - 2021 but we are just using the years
+2005 - 2019.
+
+## Creating the data frame
+
+Columns in the data frame:
+
+-   Year
+
+-   Quartal
+
+-   Flights from Colombia
+
+-   Total Flights to Mexico
+
+-   GDP - Mexico
+
+-   Inflation - Mexico
+
+-   GDP - Colombia
+
+-   Inflation - Colombia
+
+```{r}
+flights <- dataTour$Mexico
+flights <- flights[, -1]
+flights <- flights[, -1]
+flights <- flights[, -2]
+flights <- flights[, -2]
+flights <- flights[, -2]
+flights <- flights[, -2]
+print(flights)
+```
+
+```{r}
+#Add year as a column to perform merge
+
+df <- as.data.frame(flights, stringsAsFactors = FALSE)
+df$Period <- time(flights)
+
+# Split into Year and Quarter
+df$Year <- as.numeric(substr(df$Period, 1, 4))
+df
+```
+
+```{r}
+GDP_Mexico <- X$Mexico
+GDP_Mexico <- GDP_Mexico[,3]
+GDP_Mexico <- data.frame(Year = time(GDP_Mexico), GDP_Mexico = as.numeric(GDP_Mexico))
+
+df <- merge(df, GDP_Mexico, by = "Year", all.x = TRUE)
+```
+
+```{r}
+Inflation_Mexico <- X$Mexico
+Inflation_Mexico <- Inflation_Mexico[,5]
+Inflation_Mexico <- data.frame(Year = time(Inflation_Mexico), Inflation_Mexico = as.numeric(Inflation_Mexico))
+
+df <- merge(df, Inflation_Mexico, by = "Year", all.x = TRUE)
+```
+
+```{r}
+GDP_Colombia <- X$Colombia
+GDP_Colombia <- GDP_Colombia[,3]
+GDP_Colombia <- data.frame(Year = time(GDP_Colombia), GDP_Colombia = as.numeric(GDP_Colombia))
+
+df <- merge(df, GDP_Colombia, by = "Year", all.x = TRUE)
+```
+
+```{r}
+Inflation_Colombia <- X$Colombia
+Inflation_Colombia <- Inflation_Colombia[,5]
+Inflation_Colombia <- data.frame(Year = time(Inflation_Colombia), Inflation_Colombia = as.numeric(Inflation_Colombia))
+
+df <- merge(df, Inflation_Colombia, by = "Year", all.x = TRUE)
+```
+
+```{r}
+df
+```
+
+```{r}
+df <- df[, -1]
+df <- df[, -2]
+```
+
+## Turn the data frame into a time series
+
+```{r}
+df <- ts(df, frequency = 4, start = c(2005, 1), end = c(2019,4))
+df
+```
+
+Now we have a time series data frame with all the important information.
+
+# Data Exploration
+
+```{r}
+lapply(df, class)
+```
+
+There are just numeric values in the data series no categorical values
+that would need to be 'translated'.
+
+```{r}
+plot(df[,1], ylab="Flights from Colombia to Mexico")
+```
+
+```{r}
+cmav(df[,1],outplot=1) # The argument outplot produces a plot
+```
+
+The cmav plot shows that there is definitely a positive trend in the
+time series that represents the target variable, which are flights from
+Colombia to Mexico. The trend is multiplicative with additive
+seasonality.
+
+```{r}
+seasplot(df[,1])
+```
+
+There is a slight seasonality visible with a trend represented as well.
+The periods 2 and 4 seem to perform better than 1 and 3 with 1 being the
+weakest period.
+
+```{r}
+dc <- decomp(df[,1],outplot=1)
+```
+
+```{r}
+tempY <- df[, 1]
+tempX <- df[, -1]
+
+for (i in 1:ncol(tempX)){ # Iterate for each column in tempX
+  # Compute correlation
+  r_value <- cor(tempX[, i], tempY, use = "complete.obs")
+  
+  # Create scatterplot
+  plot(tempX[,i],tempY,xlab=colnames(tempX)[i],ylab="Flights Colombia - Mexico", col="darkred", type="p", pch = 19, main=paste("Scatterplot:", colnames(tempX)[i]))
+  
+  # Add correlation text on the plot
+  legend("topleft", legend = paste("r =", round(r_value, 3)), bty = "n")
+}
+```
+
+We can see that there is a correlation for all of the different
+variables together with the flights from Colombia to Mexico.
+
+# Training & Test Set
+
+```{r}
+
+y.train <- window(df, end=c(2018, 4))
+#y.validation <- window(df, start=c(2018, 3), end=c(2018, 4))
+y.test <- window(df, start=c(2019, 1))
+```
+
+```{r}
+y.train_Colombia <- window(df[,1], end=c(2018,4))
+#y.validation_Colombia <- window(df[,1], start=c(2018, 3), end=c(2018, 4))
+y.test_Colombia <- window(df[,1], start=c(2019, 1))
+```
+
+# Model building
+
+## Benchmark: Exponential Smoothing
+
+Exponential Smoothing serves as a benchmark univariate model designed to
+capture trend and seasonal patterns within the tourism flow series.
+
+```{r}
+#Benchmark using Exponential Smoothing
+ets_model <- ets(y.train_Colombia)
+ets_model
+```
+
+```{r}
+ets_forecast <- forecast(ets_model, h = 4)
+ets_forecast
+```
+
+```{r}
+ets_forecast <- ts(ets_forecast$mean, frequency=frequency(y.test_Colombia), start=start(y.test_Colombia))
+ets_forecast
+```
+
+```{r}
+ts.plot(y.train_Colombia ,y.test_Colombia, ets_forecast, col=c("black","black","red"))
+```
+
+## Model 1: Multiple Regression
+
+The Multiple Regression model incorporates exogenous predictors such as
+GDP, exchange rate, or inflation, allowing the model to capture economic
+relationships influencing tourism flows.
+
+```{r}
+#Multiple Regression
+multiple_regression_model <- lm(formula = x ~ ., data = y.train)
+summary(multiple_regression_model)
+```
+
+```{r}
+multiple_regression_forecast <- predict(multiple_regression_model, newdata = y.test)
+multiple_regression_forecast
+```
+
+```{r}
+multiple_regression_forecast <- ts(multiple_regression_forecast, frequency=frequency(y.test_Colombia),start=start(y.test_Colombia))
+multiple_regression_forecast
+```
+
+```{r}
+ts.plot(y.train_Colombia ,y.test_Colombia, multiple_regression_forecast, col=c("black","black","red"))
+```
+
+## Model 2: Auto Regression
+
+The Auto Regression model utilizes lagged tourism observations as
+predictors to model the inherent temporal structure of the series.
+
+```{r}
+n <-length(y.train_Colombia)
+X<-array(NA,c(n,5))
+ 
+#Loop to create lags
+ for(i in 1:5){
+  X[i:n,i]<-y.train_Colombia[1:(n-i+1)]
+ }
+#Name the columns
+ colnames(X) <-c("y",paste0("lag",1:4))
+ 
+ X <- as.data.frame(X)
+ 
+ head(X)
+```
+
+```{r}
+Regression_Model <- lm(y~., data=X)
+AutoRegression_Model <- step(Regression_Model)
+summary(AutoRegression_Model)
+```
+
+```{r}
+Autoregression_forecast <- array(NA, c(4,1))
+Xnew<-tail(y.train_Colombia, 4)
+Xnew<-Xnew[4:1]
+Xnew
+```
+
+```{r}
+formula(AutoRegression_Model)
+```
+
+```{r}
+Xnew<-c(Xnew,Autoregression_forecast)
+Xnew
+```
+
+```{r}
+Autoregression_forecast <- array(NA, c(4,1))
+
+for(i in 1:4){
+  Xnew <- tail(y.train_Colombia,4)
+  Xnew <- c(Xnew, Autoregression_forecast)
+  Xnew <- Xnew[i:(3+i)]
+  Xnew <- Xnew[4:1]
+  Xnew <- array(Xnew,c(1,4))
+  colnames(Xnew) <- paste0("lag",1:4)
+  Xnew<-as.data.frame(Xnew)
+  
+  Autoregression_forecast[i] <- predict(AutoRegression_Model, Xnew)
+}
+
+Autoregression_forecast
+```
+
+```{r}
+Autoregression_forecast <- ts(Autoregression_forecast, frequency=frequency(y.test_Colombia),start=start(y.test_Colombia))
+Autoregression_forecast
+```
+
+```{r}
+ts.plot(y.train_Colombia ,y.test_Colombia, Autoregression_forecast, col=c("black","black","red"))
+```
+
+## Model 3: Lasso Regression
+
+The LASSO (Least Absolute Shrinkage and Selection Operator) model
+applies regularization to select the most relevant lagged variables
+while penalizing less significant ones. This technique prevents
+overfitting and enhances generalization.
+
+```{r}
+ n <- length(y.train_Colombia)
+ X <- array(NA,c(n,5))
+ 
+ #Loop to create lags
+ for(i in 1:5){
+  X[i:n,i] <- y.train_Colombia[1:(n-i+1)]
+ }
+ #Name the columns
+ colnames(X) <-c("y",paste0("lag",1:4))
+ X <- as.data.frame(X)
+ head(X)
+```
+
+```{r}
+ xx <- as.matrix(X[-(1:5),-1])
+ yy <- as.matrix(X[-(1:5),1])
+```
+
+```{r}
+Lasso_Model <- cv.glmnet(x=xx, y=yy)
+summary(Lasso_Model)
+```
+
+```{r}
+Lasso_forecast <- array(NA,c(4,1))
+for(i in 1:4){
+ Xnew <- c(tail(y.train_Colombia, 4), Lasso_forecast)
+ Xnew<-(Xnew[i:(3+i)])[4:1]
+ Xnew<-array(Xnew,c(1,4))
+ colnames(Xnew)<-paste0("lag",1:4)
+
+ Lasso_forecast[i]<-predict(Lasso_Model, Xnew)
+}
+
+Lasso_forecast
+```
+
+```{r}
+Lasso_forecast <- ts(Lasso_forecast, frequency=frequency(y.test_Colombia),start=start(y.test_Colombia))
+Lasso_forecast
+```
+
+```{r}
+ts.plot(y.train_Colombia ,y.test_Colombia, Lasso_forecast, col=c("black","black","red"))
+```
+
+## Model 4: ARIMA
+
+The ARIMA (AutoRegressive Integrated Moving Average) model combines
+autoregressive, differencing, and moving average components to capture
+both short-term dependencies and longer-term trends.
+
+```{r}
+# ARIMA model
+arima_forecast <- thief(y.train_Colombia, usemodel="arima")
+arima_forecast
+```
+
+```{r}
+arima_df <- as.data.frame(arima_forecast)
+vector <- as.numeric(arima_df[1, 1:4])
+print(vector)
+```
+
+```{r}
+arima_forecast <- ts(vector, frequency=frequency(y.test_Colombia),start=start(y.test_Colombia))
+arima_forecast
+```
+
+```{r}
+ts.plot(y.train_Colombia ,y.test_Colombia, arima_forecast, col=c("black","black","red"))
+```
+
+# Model Evaluation
+
+```{r}
+ts.plot(y.train_Colombia, y.test_Colombia, ets_forecast, multiple_regression_forecast, Autoregression_forecast, Lasso_forecast, arima_forecast, col=c("black","black","red","blue","green", "magenta", "cyan"))
+ legend("bottomright",c("ETS","Multiple Regression","Autoregression", "Lasso", "ARIMA"),col=c("red","blue","green", "magenta", "cyan"),lty=1)
+```
+
+```{r}
+#MAE
+ets_mae <- MAE(y.test_Colombia, ets_forecast)
+multiple_regressiom_mae <- MAE(y.test_Colombia, multiple_regression_forecast)
+Autoregression_mae <- MAE(y.test_Colombia, Autoregression_forecast)
+Lasso_mae <- MAE(y.test_Colombia, Lasso_forecast)
+arima_mae <- MAE(y.test_Colombia, arima_forecast)
+```
+
+```{r}
+#MAPE
+ets_mape <- MAPE(y.test_Colombia, ets_forecast)
+multiple_regressiom_mape <- MAPE(y.test_Colombia, multiple_regression_forecast)
+Autoregression_mape <- MAPE(y.test_Colombia, Autoregression_forecast)
+Lasso_mape <- MAPE(y.test_Colombia, Lasso_forecast)
+arima_mape <- MAPE(y.test_Colombia, arima_forecast)
+```
+
+```{r}
+#AIC
+ets_aic <- AIC(ets_model)
+multiple_regressiom_aic <- AIC(multiple_regression_model)
+Autoregression_aic <- AIC(AutoRegression_Model)
+Lasso_aic <- "NA"
+arima_aic <- "NA"
+```
+
+```{r}
+#RMSE
+ets_rmse <- sqrt(mean((y.test_Colombia - ets_forecast)^2))
+multiple_regressiom_rmse <- sqrt(mean((y.test_Colombia - multiple_regression_forecast)^2))
+Autoregression_rmse <- sqrt(mean((y.test_Colombia - Autoregression_forecast)^2))
+Lasso_rmse <- sqrt(mean((y.test_Colombia - Lasso_forecast)^2))
+arima_rmse <- sqrt(mean((y.test_Colombia - arima_forecast)^2))
+```
+
+```{r}
+results <- data.frame(
+  Model = c("Exponential Smoothing","Multiple Regression","Auto Regression","LASSO Regression", "ARIMA"),
+  AIC = c(ets_aic, multiple_regressiom_aic, Autoregression_aic, Lasso_aic, arima_aic),
+  MAE = c(ets_mae, multiple_regressiom_mae, Autoregression_mae, Lasso_mae, arima_mae),
+  MAPE = c(ets_mape, multiple_regressiom_mape, Autoregression_mape, Lasso_mape, arima_mape),
+  RMSE = c(ets_rmse, multiple_regressiom_rmse, Autoregression_rmse, Lasso_rmse, arima_rmse)
+)
+print(results)
+```
+
+-   **Lower AIC** → Better model fit (penalized for complexity)
+
+-   **Lower MAE / MAPE** → Better prediction accuracy
+
+-   **Visual plot** → Helps check which model tracks the test data best
+
+#### **Exponential Smoothing (ETS)**
+
+The model achieved a MAPE of 9.8% and an RMSE of 17,783, indicating a
+reasonable but comparatively less precise fit. While ETS effectively
+models smooth seasonal variations, it does not account for external
+economic or behavioral factors, leading to higher forecast errors
+relative to other approaches.
+
+#### **Multiple Regression**
+
+With a MAPE of 12% and an RMSE of 19,863, this model decreased accuracy
+relative to ETS. This demonstrates that macroeconomic variables have a
+measurable influence on tourism demand. However, the linear nature of
+this model limits its flexibility in capturing dynamic temporal
+dependencies.
+
+#### **Auto Regression (AR)**
+
+This model obtained a notably lower AIC (1069.35) and improved error
+measures (MAPE = 6.9%, RMSE = 11,764), suggesting strong autocorrelation
+within the tourism flow data. The AR model effectively captures
+short-term persistence and seasonality in tourism patterns, emphasizing
+the predictive power of past tourism behavior.
+
+#### **LASSO Regression**
+
+LASSO achieved a MAPE of 4.9% and RMSE of 8,791 — among the best results
+overall. Although its AIC value is not interpretable due to the
+regularization penalty, LASSO’s superior predictive accuracy indicates
+its strength in handling multicollinearity and high-dimensional lag
+structures.
+
+#### **ARIMA**
+
+It achieved the lowest MAE (6,273.8), MAPE (4.6%), and RMSE (7,761.8),
+representing the most accurate forecasts among all tested models.
+ARIMA’s ability to model trend, seasonality, and noise jointly makes it
+particularly suitable for this quarterly tourism series, which exhibits
+both persistence and non-stationary characteristics.
+
+### **Comparative Summary**
+
+The overall ranking of model performance, based on MAPE and RMSE, is as
+follows:
+
+> **ARIMA ≈ LASSO \> Auto Regression \> Exponential Smoothing \>
+> Multiple Regression**
+
+The results indicate that **ARIMA** and **LASSO** provide the most
+accurate forecasts for quarterly tourism flows from Colombia to Mexico.
+ARIMA excels in capturing dynamic time-dependent structures, while LASSO
+effectively selects the most informative lag features without
+overfitting. In contrast, ETS and Multiple Regression serve as valuable
+baseline models, offering interpretability but lower predictive
+precision.
+
+### **Conclusion**
+
+In summary, the evaluation results confirm that models incorporating
+**temporal dependencies** (AR, ARIMA) and **regularization mechanisms**
+(LASSO) outperform simpler approaches such as ETS and Multiple
+Regression. Given its superior predictive accuracy and theoretical
+suitability for univariate non-stationary data, **the ARIMA model is
+recommended as the primary forecasting tool** for predicting short-term
+tourism flows. LASSO may be considered as a complementary approach when
+incorporating additional exogenous or high-dimensional predictors in
+future analyses.
